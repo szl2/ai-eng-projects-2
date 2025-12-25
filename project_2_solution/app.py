@@ -1,43 +1,26 @@
 import pathlib, streamlit as st
 from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.llms import Ollama
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-import glob
-from langchain_community.document_loaders import UnstructuredURLLoader, TextLoader, PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceEmbeddings, SentenceTransformerEmbeddings
+from langchain.prompts import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
 
-# -----------------------------------
+SYSTEM_TEMPLATE = """
+You are a **Customer Support Chatbot**. Use only the information in CONTEXT to answer.
+If the answer is not in CONTEXT, respond with “I'm not sure from the docs.”
 
-pdf_paths = glob.glob("data/Everstorm_*.pdf")
-raw_docs = []
+Rules:
+1) Use ONLY the provided <context> to answer.
+2) If the answer is not in the context, say: "I don't know based on the retrieved documents."
+3) Be concise and accurate. Prefer quoting key phrases from the context.
+4) When possible, cite sources as [source: source] using the metadata.
 
-print(f"Loaded {len(raw_docs)} PDF pages from {len(pdf_paths)} files.")
-
-
-for pdf_path in pdf_paths:
-    loader = PyPDFLoader(pdf_path)
-    raw_docs.extend(loader.load())
-
-chunks = []
-
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=30)
-chunks = text_splitter.split_documents(raw_docs)
-print(f"✅ {len(chunks)} chunks ready for embedding")
-
-
-embeddings = SentenceTransformerEmbeddings(model_name="thenlper/gte-small")
-vectordb = FAISS.from_documents(chunks, embeddings)
-retriever = vectordb.as_retriever(search_kwargs={"k": 8})
-
-vectordb.save_local("faiss_index")
-
-print("✅ Vector store with", vectordb.index.ntotal, "embeddings")
-
-
-# -----------------------------------
+"""
 
 
 st.set_page_config(page_title="Customer Support Chatbot")
@@ -58,10 +41,16 @@ def init_chain():
         return_messages=True,
     )
 
+    chat_prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(SYSTEM_TEMPLATE),
+        HumanMessagePromptTemplate.from_template("{question}"),
+    ])
+
     return ConversationalRetrievalChain.from_llm(
         llm,
         retriever,
         memory=memory,
+        qa_prompt=chat_prompt,
     )
 
 chain = init_chain()
@@ -71,16 +60,19 @@ if "history" not in st.session_state:
 
 question = st.chat_input("What is in your mind?")
 if question:
-    with st.spinner("Thinking..."):
+    for user, bot in st.session_state.history:
+        st.markdown(f"**Question:** {user}")
+        st.markdown(f"**Answer:** {bot}")
+        st.markdown("\n")
+
+    st.markdown(f"**Question:** {question}")
+    with st.spinner(f"Thinking..."):
         response = chain(
             {
                 "question": question,
-                "chat_history": st.session_state.history,   # <- supply it
+                "chat_history": st.session_state.history,   
             }
         )
     st.session_state.history.append((question, response["answer"]))
-
-
-for user, bot in reversed(st.session_state.history):
-    st.markdown(f"**You:** {user}")
-    st.markdown(bot)
+    st.markdown(f"**Answer:** {response['answer']}")
+    st.markdown("\n")
